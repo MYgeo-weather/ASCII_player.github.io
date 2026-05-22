@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>Видео → ASCII</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: #000;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+        }
+        .container {
+            background: #000;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(139,0,0,0.2);
+            overflow: hidden;
+            border: 1px solid #8B0000;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            max-width: 100%;
+            height: 95vh;
+        }
+        .ascii-panel {
+            background: black;
+            padding: 10px;
+            overflow: auto;
+            flex: 1;
+            -webkit-overflow-scrolling: touch;
+        }
+        #asciiCanvas {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            line-height: 1.08;
+            background: black;
+            display: block;
+            white-space: pre;
+            font-size: 10px;
+            margin: 0;
+        }
+        .controls {
+            background: #111;
+            padding: 10px;
+            border-top: 1px solid #8B0000;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+        }
+        .input-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #1a1a1a;
+            padding: 4px 10px;
+            border-radius: 25px;
+            border: 1px solid #333;
+        }
+        .input-group label {
+            color: #8B0000;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        input, button {
+            background: #000;
+            border: 1px solid #8B0000;
+            color: #8B0000;
+            padding: 6px 10px;
+            border-radius: 20px;
+            font-family: monospace;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        input:hover, button:hover {
+            background: #8B0000;
+            color: black;
+        }
+        .status {
+            color: #8B0000;
+            font-size: 10px;
+            background: #1a1a1a;
+            padding: 3px 8px;
+            border-radius: 20px;
+        }
+        button {
+            background: #8B0000;
+            color: black;
+            font-weight: bold;
+            min-width: 44px;
+            min-height: 34px;
+        }
+        button:active {
+            background: #ff3333;
+            transform: scale(0.96);
+        }
+        @media (min-width: 768px) {
+            .container {
+                width: auto;
+                min-width: 500px;
+                max-width: 90vw;
+                height: 85vh;
+            }
+            #asciiCanvas {
+                font-size: 11px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container" id="mainContainer">
+    <div class="ascii-panel">
+        <pre id="asciiCanvas"></pre>
+    </div>
+    <div class="controls">
+        <div class="input-group">
+            <label>ВИДЕО:</label>
+            <input type="file" id="videoInput" accept="video/*">
+            <button id="pauseBtn">ПАУЗА</button>
+            <button id="resetBtn">СБРОС</button>
+        </div>
+        <div class="input-group">
+            <label>ТОЧНОСТЬ:</label>
+            <span id="pixelSizeValue" class="status">0.1 px</span>
+        </div>
+        <div class="input-group">
+            <label>FPS:</label>
+            <input type="range" id="fpsSlider" min="5" max="60" value="30" step="1">
+            <span id="fpsValue" class="status">30 fps</span>
+        </div>
+        <div class="input-group">
+            <label>РАЗМЕР:</label>
+            <button id="zoomOutBtn">-</button>
+            <span id="zoomValue" class="status">100%</span>
+            <button id="zoomInBtn">+</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    (function() {
+        const CHARS = " .`'^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$█▓▒░";
+        
+        let COLS = 80;
+        let ROWS = 45;
+        let pixelBlockSize = 0.1;
+        let targetFPS = 30;
+        let isPlaying = true;
+        let animationId = null;
+        let videoElement = null;
+        let canvas = null;
+        let ctx = null;
+        
+        let fontSize = 10;
+        let lastFrameTime = 0;
+        let currentVideoSrc = null;
+        let frameInterval = 1000 / targetFPS;
+        
+        const asciiPre = document.getElementById('asciiCanvas');
+        const videoInput = document.getElementById('videoInput');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const fpsSlider = document.getElementById('fpsSlider');
+        const fpsValue = document.getElementById('fpsValue');
+        const pixelSizeValue = document.getElementById('pixelSizeValue');
+        const zoomInBtn = document.getElementById('zoomInBtn');
+        const zoomOutBtn = document.getElementById('zoomOutBtn');
+        const zoomValue = document.getElementById('zoomValue');
+        const mainContainer = document.getElementById('mainContainer');
+
+        let resizeTimeout = null;
+        let isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+        function updateGridSize() {
+            const panel = document.querySelector('.ascii-panel');
+            const width = panel.clientWidth - 16;
+            const height = panel.clientHeight - 16;
+            
+            const charWidth = fontSize * 0.6;
+            const charHeight = fontSize * 1.1;
+            
+            let newCols = Math.max(40, Math.floor(width / charWidth));
+            let newRows = Math.max(25, Math.floor(height / charHeight));
+            
+            if (isMobile) {
+                if (newCols > 100) newCols = 100;
+                if (newRows > 60) newRows = 60;
+            } else {
+                if (newCols > 200) newCols = 200;
+                if (newRows > 120) newRows = 120;
+            }
+            
+            if (COLS !== newCols || ROWS !== newRows) {
+                COLS = newCols;
+                ROWS = newRows;
+            }
+        }
+
+        function setFontSize(newSize) {
+            if (isMobile) {
+                fontSize = Math.max(6, Math.min(16, newSize));
+            } else {
+                fontSize = Math.max(6, Math.min(22, newSize));
+            }
+            asciiPre.style.fontSize = fontSize + 'px';
+            zoomValue.innerText = Math.round((fontSize / 10) * 100) + '%';
+            updateGridSize();
+        }
+
+        function updatePixelDisplay() {
+            pixelSizeValue.innerText = pixelBlockSize.toFixed(2) + ' px';
+        }
+
+        function setPixelBlockSize(newSize) {
+            newSize = parseFloat(newSize.toFixed(3));
+            if (newSize < 0.1) newSize = 0.1;
+            if (newSize > (isMobile ? 5 : 10)) newSize = isMobile ? 5 : 10;
+            pixelBlockSize = newSize;
+            updatePixelDisplay();
+        }
+
+        function changePixelSize(delta) {
+            let step = pixelBlockSize < 1 ? 0.05 : (pixelBlockSize < 5 ? 0.5 : 1);
+            let newSize = pixelBlockSize + (delta * step);
+            setPixelBlockSize(newSize);
+        }
+
+        function frameToAscii(imageData, w, h) {
+            const stepX = w / COLS;
+            const stepY = h / ROWS;
+            const sampleW = Math.max(1, stepX * pixelBlockSize);
+            const sampleH = Math.max(1, stepY * pixelBlockSize);
+            const charsLen = CHARS.length;
+            
+            const rows = [];
+            
+            for (let row = 0; row < ROWS; row++) {
+                let line = '';
+                const py = row * stepY;
+                if (py >= h) continue;
+                
+                const startY = Math.floor(py);
+                const endY = Math.min(h - 1, startY + Math.ceil(sampleH));
+                
+                for (let col = 0; col < COLS; col++) {
+                    const px = col * stepX;
+                    if (px >= w) break;
+                    
+                    const startX = Math.floor(px);
+                    const endX = Math.min(w - 1, startX + Math.ceil(sampleW));
+                    
+                    let r = 0, g = 0, b = 0, count = 0;
+                    
+                    for (let y = startY; y <= endY; y++) {
+                        const rowOffset = y * w * 4;
+                        for (let x = startX; x <= endX; x++) {
+                            const idx = rowOffset + x * 4;
+                            r += imageData[idx];
+                            g += imageData[idx+1];
+                            b += imageData[idx+2];
+                            count++;
+                        }
+                    }
+                    
+                    if (count > 0) {
+                        r = (r / count) | 0;
+                        g = (g / count) | 0;
+                        b = (b / count) | 0;
+                    }
+                    
+                    const bright = (r * 0.299 + g * 0.587 + b * 0.114);
+                    let charIdx = (bright / 255) * (charsLen - 1);
+                    charIdx = Math.min(Math.floor(charIdx), charsLen - 1);
+                    const ch = CHARS[charIdx];
+                    
+                    line += '<span style="color: rgb(' + r + ',' + g + ',' + b + ');">' + ch + '</span>';
+                }
+                rows.push(line);
+            }
+            return rows.join('\n');
+        }
+
+        function drawFrame() {
+            if (!videoElement || videoElement.paused || videoElement.ended || !isPlaying) return;
+            
+            if (!canvas) {
+                canvas = document.createElement('canvas');
+                ctx = canvas.getContext('2d');
+            }
+            
+            const vw = videoElement.videoWidth;
+            const vh = videoElement.videoHeight;
+            if (vw === 0 || vh === 0) return;
+            
+            canvas.width = vw;
+            canvas.height = vh;
+            ctx.drawImage(videoElement, 0, 0, vw, vh);
+            
+            try {
+                const imgData = ctx.getImageData(0, 0, vw, vh).data;
+                const ascii = frameToAscii(imgData, vw, vh);
+                asciiPre.innerHTML = ascii;
+            } catch(e) {}
+        }
+
+        function animationLoop(now) {
+            if (!videoElement || videoElement.paused || videoElement.ended || !isPlaying) {
+                animationId = requestAnimationFrame(animationLoop);
+                return;
+            }
+            
+            const elapsed = now - lastFrameTime;
+            if (elapsed >= frameInterval) {
+                lastFrameTime = now - (elapsed % frameInterval);
+                drawFrame();
+            }
+            
+            animationId = requestAnimationFrame(animationLoop);
+        }
+
+        function startRender() {
+            if (animationId) cancelAnimationFrame(animationId);
+            lastFrameTime = performance.now();
+            animationId = requestAnimationFrame(animationLoop);
+        }
+
+        function stopRender() {
+            if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+        }
+        
+        function handleResize() {
+            if (resizeTimeout) clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                updateGridSize();
+            }, 150);
+        }
+        
+        function initVideo(file) {
+            if (!file) return;
+            const url = URL.createObjectURL(file);
+            if (videoElement) {
+                videoElement.pause();
+                videoElement.src = '';
+                if (currentVideoSrc) URL.revokeObjectURL(currentVideoSrc);
+            }
+            videoElement = document.createElement('video');
+            videoElement.src = url;
+            videoElement.loop = true;
+            videoElement.muted = false;
+            currentVideoSrc = url;
+            
+            videoElement.onloadedmetadata = () => {
+                updateGridSize();
+                videoElement.play().then(() => {
+                    isPlaying = true;
+                    pauseBtn.textContent = 'ПАУЗА';
+                    startRender();
+                }).catch(() => {
+                    isPlaying = false;
+                    pauseBtn.textContent = 'СТАРТ';
+                });
+            };
+            videoElement.onerror = () => { asciiPre.innerHTML = "Ошибка видео"; };
+        }
+
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                if (videoElement) videoElement.pause();
+                stopRender();
+                initVideo(file);
+            }
+        });
+
+        pauseBtn.addEventListener('click', () => {
+            if (!videoElement) return;
+            if (isPlaying) {
+                videoElement.pause();
+                isPlaying = false;
+                pauseBtn.textContent = 'СТАРТ';
+                stopRender();
+            } else {
+                videoElement.play().then(() => {
+                    isPlaying = true;
+                    pauseBtn.textContent = 'ПАУЗА';
+                    startRender();
+                }).catch(() => {});
+            }
+        });
+
+        resetBtn.addEventListener('click', () => {
+            if (videoElement) {
+                videoElement.pause();
+                stopRender();
+                videoElement.src = '';
+                if (currentVideoSrc) URL.revokeObjectURL(currentVideoSrc);
+                currentVideoSrc = null;
+                asciiPre.innerHTML = '';
+                videoInput.value = '';
+                isPlaying = true;
+                pauseBtn.textContent = 'ПАУЗА';
+            }
+        });
+
+        fpsSlider.addEventListener('input', (e) => {
+            targetFPS = parseInt(e.target.value);
+            fpsValue.textContent = targetFPS + ' fps';
+            frameInterval = 1000 / targetFPS;
+        });
+
+        zoomInBtn.addEventListener('click', () => setFontSize(fontSize + 1));
+        zoomOutBtn.addEventListener('click', () => setFontSize(fontSize - 1));
+
+        function handleWheel(e) {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? -1 : 1;
+                changePixelSize(delta);
+            }
+        }
+        window.addEventListener('wheel', handleWheel, { passive: false });
+        
+        window.addEventListener('resize', handleResize);
+        
+        const resizeObserver = new ResizeObserver(() => {
+            updateGridSize();
+        });
+        resizeObserver.observe(mainContainer);
+        
+        if (isMobile) {
+            targetFPS = 24;
+            fpsSlider.value = 24;
+            fpsValue.textContent = '24 fps';
+            frameInterval = 1000 / targetFPS;
+            setFontSize(9);
+        } else {
+            setFontSize(10);
+        }
+        
+        pixelBlockSize = 0.1;
+        updatePixelDisplay();
+        updateGridSize();
+        asciiPre.innerHTML = "ЗАГРУЗИТЕ ВИДЕО\n\nCtrl + колёсико - точность арта\n+/- - размер шрифта";
+    })();
+</script>
+</body>
+</html>
